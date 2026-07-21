@@ -1,6 +1,6 @@
 services:
   n8n:
-    image: n8nio/n8n:${N8N_VERSION:-latest}
+    image: n8nio/n8n:${N8N_VERSION:-2.31.4}
     restart: unless-stopped
     environment:
       - N8N_HOST=${SERVICE_FQDN_N8N}
