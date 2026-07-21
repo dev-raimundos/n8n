@@ -1,16 +1,16 @@
 # n8n — producao + teste (Coolify)
 
 Instancia do n8n rodando via Docker Compose no Coolify, com dois ambientes
-independentes (producao e teste) apontando para o mesmo servidor Postgres,
-cada um no seu proprio banco. Arquivos binarios dos workflows (ex: PDFs
-gerados, planilhas processadas) ficam salvos em disco local (volume Docker),
-nao dentro do Postgres.
+independentes (producao e teste), cada um com seu proprio Postgres embutido
+no mesmo compose — nenhum dos dois depende de um servidor de banco externo.
+Arquivos binarios dos workflows (ex: PDFs gerados, planilhas processadas)
+ficam salvos em disco local (volume Docker), nao dentro do Postgres.
 
 ## Arquivos deste projeto
 
-- `compose.yaml` — a definicao do servico n8n. E o MESMO arquivo usado para
-  os dois ambientes; o que muda entre producao e teste sao as variaveis de
-  ambiente e o dominio configurados no Coolify.
+- `compose.yaml` — define os servicos `postgres` e `n8n`. E o MESMO arquivo
+  usado para os dois ambientes; o que muda entre producao e teste sao as
+  variaveis de ambiente e o dominio configurados no Coolify.
 - `.env.example` — lista de variaveis que precisam existir. So documentacao;
   os valores reais entram direto no Coolify (nunca no git).
 - `.env` — opcional, so se voce quiser rodar `docker compose up` localmente
@@ -18,34 +18,23 @@ nao dentro do Postgres.
 
 A pasta `data/` que existia foi removida: bind mount local (`./data:...`)
 nao sobrevive com garantia a redeploys no Coolify (ele pode reclonar o
-repositorio a cada deploy). O `compose.yaml` usa um **named volume**
-(`n8n_data`), que e a forma que o Coolify gerencia como storage persistente
-de verdade.
+repositorio a cada deploy). O `compose.yaml` usa **named volumes**
+(`n8n_data` e `n8n_postgres_data`), que e a forma que o Coolify gerencia como
+storage persistente de verdade.
 
-## 1. Preparar o Postgres (host separado)
+## 1. Postgres embutido (sem host separado)
 
-Quando o Postgres estiver no ar, rode uma vez (via psql, com um usuario
-admin) para criar os dois bancos e um usuario dedicado por ambiente:
+O servico `postgres` sobe junto no mesmo compose e cria o banco/usuario
+sozinho na primeira subida (via as variaveis `POSTGRES_DB`/`POSTGRES_USER`/
+`POSTGRES_PASSWORD`, preenchidas a partir de `DB_POSTGRESDB_*`). O n8n fala
+com ele pelo nome do servico (`DB_POSTGRESDB_HOST=postgres`) na rede interna
+do Docker — sem SSL, sem IP/porta pra configurar, sem depender de nenhum
+outro servidor estar de pe.
 
-```sql
-CREATE DATABASE n8n_producao;
-CREATE DATABASE n8n_teste;
-
-CREATE USER n8n_prod WITH PASSWORD 'defina_uma_senha_forte';
-CREATE USER n8n_test WITH PASSWORD 'defina_outra_senha_forte';
-
-GRANT ALL PRIVILEGES ON DATABASE n8n_producao TO n8n_prod;
-GRANT ALL PRIVILEGES ON DATABASE n8n_teste TO n8n_test;
-
--- Postgres 15+: o dono do schema public precisa conceder isso explicitamente
-\c n8n_producao
-GRANT ALL ON SCHEMA public TO n8n_prod;
-\c n8n_teste
-GRANT ALL ON SCHEMA public TO n8n_test;
-```
-
-Usar um usuario por ambiente (em vez de um so pra tudo) evita que um bug ou
-uma automacao de teste consiga mexer no banco de producao.
+Cada ambiente (producao/teste) tem seu proprio volume de dados do Postgres
+(`n8n_postgres_data_producao` / `n8n_postgres_data_teste`), entao os dois
+bancos ficam completamente isolados mesmo compartilhando o mesmo
+`compose.yaml`.
 
 ## 2. Estrutura no Coolify
 
@@ -64,10 +53,13 @@ Isso encaixa exatamente com o que voce quer:
    |---|---|---|
    | `N8N_ENV_NAME` | `producao` | `teste` |
    | `N8N_ENCRYPTION_KEY` | gerar com `openssl rand -base64 32` | gerar outra, diferente |
-   | `DB_POSTGRESDB_HOST` | igual nos dois (mesmo host Postgres) | |
    | `DB_POSTGRESDB_DATABASE` | `n8n_producao` | `n8n_teste` |
    | `DB_POSTGRESDB_USER` | `n8n_prod` | `n8n_test` |
-   | `DB_POSTGRESDB_PASSWORD` | senha do n8n_prod | senha do n8n_test |
+   | `DB_POSTGRESDB_PASSWORD` | senha forte, uma por ambiente | senha forte, diferente da de producao |
+
+   Essas tres ultimas variaveis nao apontam pra um banco que ja existe — elas
+   definem o banco/usuario que o container `postgres` embutido cria sozinho
+   na primeira subida daquele ambiente.
 
    As duas chaves de criptografia precisam ser **diferentes e permanentes**:
    se voce regenerar a chave depois, todas as credenciais salvas naquele
@@ -91,9 +83,12 @@ Isso encaixa exatamente com o que voce quer:
 
 ```bash
 cp .env.example .env
-# preencha .env com valores de teste (pode ser um Postgres local ou o mesmo remoto)
+# preencha .env com valores de teste
 docker compose up
 ```
+
+O Postgres sobe junto (servico `postgres` no mesmo compose), entao isso
+funciona isolado, sem precisar de nenhum banco externo rodando.
 
 Acesse `http://localhost:5678`.
 
@@ -102,8 +97,12 @@ Acesse `http://localhost:5678`.
 - **"Preciso mexer na pasta `data/`?"** Nao, foi removida — o volume
   `n8n_data` e criado e gerenciado pelo proprio Docker/Coolify.
 - **Os dois ambientes competem pelo mesmo volume?** Nao, o nome do volume
-  inclui `N8N_ENV_NAME`, entao `n8n_data_producao` e `n8n_data_teste` sao
-  volumes distintos mesmo usando o mesmo `compose.yaml`.
+  inclui `N8N_ENV_NAME`, entao `n8n_data_producao`/`n8n_data_teste` e
+  `n8n_postgres_data_producao`/`n8n_postgres_data_teste` sao volumes
+  distintos mesmo usando o mesmo `compose.yaml`.
+- **E o Postgres compartilhado que era usado antes?** Nao e mais necessario
+  pra esse projeto; cada ambiente agora tem seu proprio Postgres embutido no
+  compose, isolado dos demais.
 - **Da pra promover um workflow de teste pra producao?** Sim, no editor do
   n8n existe export/import de workflow (JSON), ou uso do recurso de
   versionamento por Git do n8n (Enterprise) se quiser algo mais formal.
